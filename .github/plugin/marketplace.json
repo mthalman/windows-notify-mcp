@@ -1,0 +1,16 @@
+{
+  "name": "windows-notify-mcp",
+  "owner": {
+    "name": "Matt Thalman"
+  },
+  "metadata": {
+    "description": "Windows toast notification MCP server for GitHub Copilot"
+  },
+  "plugins": [
+    {
+      "name": "windows-notify-mcp",
+      "description": "MCP server that shows Windows toast notifications, with optional buttons that report which one the user selected.",
+      "source": "./"
+    }
+  ]
+}

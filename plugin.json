@@ -1,0 +1,11 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "windows-notify-mcp",
+  "description": "MCP server that shows Windows toast notifications, with optional buttons that report which one the user selected.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Matt Thalman"
+  },
+  "repository": "https://github.com/mthalman/windows-notify-mcp",
+  "keywords": ["windows", "notifications", "toast", "mcp"]
+}
