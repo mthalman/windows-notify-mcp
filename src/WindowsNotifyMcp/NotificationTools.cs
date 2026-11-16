@@ -1,5 +1,7 @@
 using System.ComponentModel;
+using System.Text.Json.Nodes;
 using ModelContextProtocol;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
 namespace WindowsNotifyMcp;
@@ -40,4 +42,32 @@ public sealed class NotificationTools(NotificationService notifications)
             throw new McpException(ex.Message, ex);
         }
     }
+
+    [McpServerTool(Name = "wait_for_notification_result", UseStructuredContent = true)]
+    [Description("Wait for a notification click. Tasks-capable clients wait until activation or notification ID expiry; other clients wait up to timeoutSeconds. Use get_notification_result for a non-blocking check.")]
+    public async Task<NotificationResult> WaitForResult(
+        RequestContext<CallToolRequestParams> requestContext,
+        [Description("The notificationId returned by show_notification.")] string notificationId,
+        [Description("Maximum seconds to wait for clients without MCP Tasks, from 1 to 300. Defaults to 60.")] int timeoutSeconds = 60,
+        CancellationToken cancellationToken = default)
+    {
+        var supportsTasks = SupportsTasks(requestContext);
+        if (!supportsTasks && (timeoutSeconds is < 1 or > 300))
+            throw new McpException("timeoutSeconds must be between 1 and 300.");
+        try
+        {
+            return await notifications.WaitForResultAsync(
+                notificationId, TimeSpan.FromSeconds(timeoutSeconds), cancellationToken,
+                waitUntilExpired: supportsTasks);
+        }
+        catch (NotificationException ex)
+        {
+            throw new McpException(ex.Message, ex);
+        }
+    }
+
+    private static bool SupportsTasks(RequestContext<CallToolRequestParams> requestContext) =>
+        requestContext.Params.Meta?["io.modelcontextprotocol/clientCapabilities"] is JsonObject clientCapabilities &&
+        clientCapabilities["extensions"] is JsonObject extensions &&
+        extensions.ContainsKey("io.modelcontextprotocol/tasks");
 }
