@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Reflection.PortableExecutable;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using Xunit;
@@ -19,7 +20,7 @@ public sealed class McpIntegrationTests
             Command = Path.ChangeExtension(typeof(McpIntegrationTests).Assembly.Location, ".exe")
         }), cancellationToken: timeout.Token);
         var tools = await client.ListToolsAsync(cancellationToken: timeout.Token);
-        Assert.Equal(new[] { "get_notification_result", "show_notification" },
+        Assert.Equal(new[] { "get_notification_result", "show_notification", "wait_for_notification_result" },
             tools.Select(tool => tool.Name).Order().ToArray());
         var shown = await client.CallToolAsync("show_notification", new Dictionary<string, object?>
         {
@@ -52,6 +53,85 @@ public sealed class McpIntegrationTests
             ["notificationId"] = "missing"
         }, cancellationToken: timeout.Token);
         Assert.True(unknown.IsError);
+    }
+
+    [Fact]
+    public async Task TaskAwareClientGetsTasksOnlyForTheWaitTool()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var executable = Path.ChangeExtension(typeof(McpIntegrationTests).Assembly.Location, ".exe");
+        var startInfo = new ProcessStartInfo(executable)
+        {
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        using var process = Process.Start(startInfo)!;
+        var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
+        try
+        {
+            await WriteRequest(process, 1, "server/discover", new JsonObject
+            {
+                ["_meta"] = CreateTaskClientMeta()
+            }, timeout.Token);
+            var discovery = await ReadResponse(process, 1, timeout.Token);
+            Assert.Equal("2026-07-28", discovery.GetProperty("result").GetProperty("supportedVersions")[0].GetString());
+            Assert.True(discovery.GetProperty("result").GetProperty("capabilities").GetProperty("extensions")
+                .TryGetProperty("io.modelcontextprotocol/tasks", out _));
+
+            await WriteRequest(process, 2, "tools/call", new JsonObject
+            {
+                ["name"] = "show_notification",
+                ["arguments"] = new JsonObject { ["title"] = "", ["message"] = "invalid" },
+                ["_meta"] = CreateTaskClientMeta()
+            }, timeout.Token);
+            var synchronous = await ReadResponse(process, 2, timeout.Token);
+            Assert.Equal("complete", synchronous.GetProperty("result").GetProperty("resultType").GetString());
+            Assert.True(synchronous.GetProperty("result").GetProperty("isError").GetBoolean());
+
+            await WriteRequest(process, 3, "tools/call", new JsonObject
+            {
+                ["name"] = "wait_for_notification_result",
+                ["arguments"] = new JsonObject { ["notificationId"] = "missing", ["timeoutSeconds"] = 301 },
+                ["_meta"] = CreateTaskClientMeta()
+            }, timeout.Token);
+            var waiting = await ReadResponse(process, 3, timeout.Token);
+            Assert.Equal("task", waiting.GetProperty("result").GetProperty("resultType").GetString());
+            var taskId = waiting.GetProperty("result").GetProperty("taskId").GetString();
+            Assert.False(string.IsNullOrEmpty(taskId));
+
+            JsonElement state;
+            do
+            {
+                await WriteRequest(process, 4, "tasks/get", new JsonObject
+                {
+                    ["taskId"] = taskId,
+                    ["_meta"] = CreateTaskClientMeta()
+                }, timeout.Token);
+                state = await ReadResponse(process, 4, timeout.Token);
+                if (state.GetProperty("result").GetProperty("status").GetString() != "completed")
+                    await Task.Delay(20, timeout.Token);
+            } while (state.GetProperty("result").GetProperty("status").GetString() == "working");
+            Assert.Equal("completed", state.GetProperty("result").GetProperty("status").GetString());
+            var toolResult = state.GetProperty("result").GetProperty("result");
+            Assert.True(toolResult.GetProperty("isError").GetBoolean());
+            Assert.Contains("Unknown or expired", toolResult.GetProperty("content")[0].GetProperty("text").GetString());
+
+            process.StandardInput.Close();
+            await process.WaitForExitAsync(timeout.Token);
+            Assert.Equal(0, process.ExitCode);
+            Assert.True(string.IsNullOrWhiteSpace(await process.StandardOutput.ReadToEndAsync(timeout.Token)));
+            Assert.DoesNotContain("failed to record", await stderr);
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync();
+            }
+        }
     }
 
     [Fact]
@@ -100,7 +180,7 @@ public sealed class McpIntegrationTests
             await process.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","method":"notifications/initialized"}""");
             await process.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}""");
             var list = await ReadResponse(process, 2, timeout.Token);
-            Assert.Equal(2, list.GetProperty("result").GetProperty("tools").GetArrayLength());
+            Assert.Equal(3, list.GetProperty("result").GetProperty("tools").GetArrayLength());
             var showTool = list.GetProperty("result").GetProperty("tools").EnumerateArray()
                 .Single(tool => tool.GetProperty("name").GetString() == "show_notification");
             Assert.True(showTool.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("buttons", out _));
@@ -117,6 +197,15 @@ public sealed class McpIntegrationTests
             var unknown = await ReadResponse(process, 5, timeout.Token);
             Assert.True(unknown.GetProperty("result").GetProperty("isError").GetBoolean());
             Assert.Contains("Unknown or expired", unknown.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString());
+            await process.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"wait_for_notification_result","arguments":{"notificationId":"unknown"}}}""");
+            var waitFallback = await ReadResponse(process, 6, timeout.Token);
+            Assert.True(waitFallback.GetProperty("result").GetProperty("isError").GetBoolean());
+            Assert.Contains("Unknown or expired", waitFallback.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString());
+            await process.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"wait_for_notification_result","arguments":{"notificationId":"unknown","timeoutSeconds":301}}}""");
+            var invalidWait = await ReadResponse(process, 7, timeout.Token);
+            Assert.True(invalidWait.GetProperty("result").GetProperty("isError").GetBoolean());
+            Assert.Contains("timeoutSeconds must be between 1 and 300",
+                invalidWait.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString());
             process.StandardInput.Close();
             await process.WaitForExitAsync(timeout.Token);
             Assert.Equal(0, process.ExitCode);
@@ -145,4 +234,29 @@ public sealed class McpIntegrationTests
                 return json.RootElement.Clone();
         }
     }
+
+    private static Task WriteRequest(
+        Process process, int id, string method, JsonObject parameters, CancellationToken cancellationToken)
+    {
+        var request = new JsonObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["id"] = id,
+            ["method"] = method,
+            ["params"] = parameters
+        };
+        return process.StandardInput.WriteLineAsync(request.ToJsonString().AsMemory(), cancellationToken);
+    }
+
+    private static JsonObject CreateTaskClientMeta() => new()
+    {
+        ["io.modelcontextprotocol/protocolVersion"] = "2026-07-28",
+        ["io.modelcontextprotocol/clientCapabilities"] = new JsonObject
+        {
+            ["extensions"] = new JsonObject
+            {
+                ["io.modelcontextprotocol/tasks"] = new JsonObject()
+            }
+        }
+    };
 }

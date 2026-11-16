@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Extensions.Tasks;
 using WindowsNotifyMcp;
 
 // Serialize process startup with a plugin update that is swapping the deployment.
@@ -26,5 +27,10 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<INotificationBackend, WindowsNotificationBackend>();
 builder.Services.AddSingleton<NotificationService>();
 builder.Services.AddMcpServer().WithStdioServerTransport()
-    .WithTools<NotificationTools>(serializerOptions: NotificationJsonContext.Default.Options);
+    .WithTools<NotificationTools>(serializerOptions: NotificationJsonContext.Default.Options)
+    .WithTasks(new InMemoryMcpTaskStore(), options =>
+        options.ExecutionModeSelector = context =>
+            context.Params.Name == "wait_for_notification_result"
+                ? McpTaskExecutionMode.Optional
+                : McpTaskExecutionMode.Synchronous);
 await builder.Build().RunAsync();

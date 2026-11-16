@@ -8,4 +8,5 @@ namespace WindowsNotifyMcp;
 [JsonSerializable(typeof(NotificationButton[]))]
 [JsonSerializable(typeof(NotificationSubmission))]
 [JsonSerializable(typeof(NotificationResult))]
+[JsonSerializable(typeof(int))]
 public partial class NotificationJsonContext : JsonSerializerContext;

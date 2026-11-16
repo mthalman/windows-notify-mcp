@@ -114,7 +114,9 @@ How it works:
 
    `submitted` means Windows accepted the notification. It does **not** guarantee a visible banner: Windows settings and Do Not Disturb can suppress it.
 
-5. Click **Acknowledge** while the client and server remain connected, then call `get_notification_result` using the returned ID:
+5. To wait for a click, call `wait_for_notification_result` with the returned ID. It returns `activated` as soon as the callback arrives. Clients that support the 2026-07-28 MCP Tasks extension can run this wait in the background; it waits until activation or the notification ID expires. Other clients wait up to 60 seconds by default and receive the current result. Set `timeoutSeconds` from 1 to 300 for these clients. The earlier experimental Tasks protocol is not wire-compatible, so clients that only support it use this bounded fallback.
+
+   For a non-blocking check, call `get_notification_result` instead:
 
    ```json
    {
@@ -147,15 +149,15 @@ Each button requires a non-whitespace `label` of at most 64 characters and exact
 
 The complete XML notification payload, including escaped text and activation metadata, must fit within 5,000 UTF-8 bytes. This combined limit can reject a notification even when each field meets its individual limit. No arbitrary commands or custom URI schemes are accepted.
 
-`get_notification_result` requires the `notificationId` returned by `show_notification`. It returns `pending` or `activated`. A toast-body click records activation with a null/omitted `actionId`. Only the first valid body or callback-button activation is recorded. `pending` does not indicate whether Windows is still displaying the notification; dismissal is not tracked.
+`get_notification_result` and `wait_for_notification_result` require the `notificationId` returned by `show_notification`. The first returns immediately; the second waits for an activation or timeout. Results are `pending` or `activated`; a wait that reaches the ID's expiry returns `expired`. A toast-body click records activation with a null/omitted `actionId`. Only the first valid body or callback-button activation is recorded. `pending` does not indicate whether Windows is still displaying the notification; dismissal is not tracked.
 
-Both tools return structured content and a JSON text representation. Invalid requests, unknown/expired IDs, disabled Windows notifications, and native delivery failures produce MCP tool errors.
+All tools return structured content and a JSON text representation. Invalid requests, unknown/expired IDs, disabled Windows notifications, and native delivery failures produce MCP tool errors.
 
 ## Callback lifetime
 
 The server tracks at most **256 notifications** per process, including activated results and notifications without callback buttons. Each entry expires **one hour after submission**. At capacity, the server rejects new submissions without evicting unexpired entries. Expired entries are removed on subsequent operations.
 
-State is in memory and disappears when the server stops. Keep the MCP connection open to retrieve callback results. No database, HTTP listener, unsolicited action notification, or automatic client polling is used. Multiple server processes route activation to the issuing session through a per-session, current-user-only Windows named pipe; an issued token and action mapping protect against accidental cross-session results. Eight independent pipe listeners keep an incomplete sender from blocking other activations, with a five-second read timeout per connection.
+State is in memory and disappears when the server stops. Keep the MCP connection open to retrieve callback results. No database, HTTP listener, or unsolicited action notification is used. The wait tool opts into the 2026-07-28 MCP Tasks extension when the client supports it; other clients make a normal bounded tool call and can fall back to `get_notification_result`. Tasks use the SDK's in-memory store and are subject to its TTL. Multiple server processes route activation to the issuing session through a per-session, current-user-only Windows named pipe; an issued token and action mapping protect against accidental cross-session results. Eight independent pipe listeners keep an incomplete sender from blocking other activations, with a five-second read timeout per connection.
 
 Tracking expiry does not remove a toast from Windows Notification Center. Clicking an old callback after its server has stopped cannot restore the lost state. Windows may briefly launch the executable for activation; that process reads the initial activation through Windows App SDK AppLifecycle, attempts to forward to the original session, and then exits instead of starting an orphan MCP server. URL buttons use Windows protocol activation independently of callback tracking.
 

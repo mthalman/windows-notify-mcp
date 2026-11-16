@@ -14,14 +14,18 @@ public sealed class NotificationService : IDisposable
     private readonly Dictionary<string, Entry> entries = new(StringComparer.Ordinal);
     private readonly INotificationBackend backend;
     private readonly TimeProvider time;
+    private readonly TimeSpan retention;
     private int submissionsInFlight;
     private bool disposing;
     private bool disposed;
 
-    public NotificationService(INotificationBackend backend, TimeProvider time)
+    public NotificationService(INotificationBackend backend, TimeProvider time, TimeSpan? retention = null)
     {
         this.backend = backend;
         this.time = time;
+        this.retention = retention ?? Retention;
+        if (this.retention <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(retention), "Retention must be positive.");
         backend.Activated += OnActivated;
     }
 
@@ -42,7 +46,7 @@ public sealed class NotificationService : IDisposable
             if (entries.Count >= Capacity)
                 throw new NotificationException("Notification tracking is full (256 entries). Wait for an entry to expire.");
 
-            expiresAt = time.GetUtcNow() + Retention;
+            expiresAt = time.GetUtcNow() + retention;
             // A fast click may arrive during Show, including a synchronous callback from a backend.
             entries.Add(id, new Entry(token, content.Buttons.Where(b => b.ActionId is not null)
                 .Select(b => b.ActionId!).ToHashSet(StringComparer.Ordinal),
@@ -87,6 +91,56 @@ public sealed class NotificationService : IDisposable
         }
     }
 
+    public async Task<NotificationResult> WaitForResultAsync(
+        string notificationId, TimeSpan timeout, CancellationToken cancellationToken = default,
+        bool waitUntilExpired = false)
+    {
+        Task<NotificationResult> activation;
+        DateTimeOffset expiresAt;
+        lock (gate)
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            RemoveExpired();
+            if (string.IsNullOrWhiteSpace(notificationId) || !entries.TryGetValue(notificationId, out var entry) ||
+                entry.Result.ExpiresAt <= time.GetUtcNow())
+                throw new NotificationException("Unknown or expired notification ID.");
+            if (entry.Result.Status != "pending")
+                return entry.Result;
+            activation = entry.Activation.Task;
+            expiresAt = entry.Result.ExpiresAt;
+        }
+
+        var waitForExpiry = waitUntilExpired || timeout >= expiresAt - time.GetUtcNow();
+        var waitDuration = GetWaitDuration(timeout, expiresAt, waitForExpiry);
+        while (true)
+        {
+            try
+            {
+                return await activation.WaitAsync(waitDuration, time, cancellationToken);
+            }
+            catch (TimeoutException)
+            {
+                lock (gate)
+                {
+                    if (!entries.TryGetValue(notificationId, out var entry) ||
+                        entry.Result.ExpiresAt <= time.GetUtcNow())
+                        return new NotificationResult(notificationId, "expired", expiresAt);
+                    if (!waitForExpiry)
+                        return entry.Result;
+                    waitDuration = GetWaitDuration(timeout, expiresAt, waitForExpiry);
+                }
+            }
+        }
+    }
+
+    private TimeSpan GetWaitDuration(TimeSpan timeout, DateTimeOffset expiresAt, bool waitUntilExpired)
+    {
+        var remaining = expiresAt - time.GetUtcNow();
+        if (remaining <= TimeSpan.Zero)
+            return TimeSpan.Zero;
+        return waitUntilExpired || remaining < timeout ? remaining : timeout;
+    }
+
     private void OnActivated(NotificationActivation activation)
     {
         lock (gate)
@@ -108,6 +162,7 @@ public sealed class NotificationService : IDisposable
                 ActionId = activation.ActionId,
                 ActivatedAt = time.GetUtcNow()
             };
+            entry.Activation.TrySetResult(entry.Result);
         }
     }
 
@@ -189,6 +244,8 @@ public sealed class NotificationService : IDisposable
                 Monitor.Wait(gate);
             disposed = true;
             backend.Activated -= OnActivated;
+            foreach (var entry in entries.Values)
+                entry.Activation.TrySetCanceled();
             entries.Clear();
             Monitor.PulseAll(gate);
         }
@@ -199,6 +256,8 @@ public sealed class NotificationService : IDisposable
         public string Token { get; } = token;
         public HashSet<string> ActionIds { get; } = actionIds;
         public NotificationResult Result { get; set; } = result;
+        public TaskCompletionSource<NotificationResult> Activation { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool Submitting { get; set; } = true;
     }
 }

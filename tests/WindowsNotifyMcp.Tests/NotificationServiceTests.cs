@@ -51,6 +51,77 @@ public sealed class NotificationServiceTests
     }
 
     [Fact]
+    public async Task WaitReturnsAnActivationThatArrivesAfterItStarts()
+    {
+        using var backend = new FakeBackend();
+        using var service = new NotificationService(backend, new FakeTime());
+        var submission = service.Show("Title", "Message", [new("Yes", ActionId: "yes")]);
+
+        var waiting = service.WaitForResultAsync(submission.NotificationId, TimeSpan.FromSeconds(5));
+        backend.Click("yes");
+
+        var result = await waiting.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal("activated", result.Status);
+        Assert.Equal("yes", result.ActionId);
+    }
+
+    [Fact]
+    public async Task WaitReturnsPendingWhenItTimesOut()
+    {
+        using var backend = new FakeBackend();
+        using var service = new NotificationService(backend, new FakeTime());
+        var submission = service.Show("Title", "Message");
+
+        var result = await service.WaitForResultAsync(submission.NotificationId, TimeSpan.FromMilliseconds(20));
+
+        Assert.Equal("pending", result.Status);
+    }
+
+    [Fact]
+    public async Task TaskWaitIgnoresTheFallbackTimeoutUntilActivation()
+    {
+        using var backend = new FakeBackend();
+        using var service = new NotificationService(backend, TimeProvider.System, TimeSpan.FromSeconds(2));
+        var submission = service.Show("Title", "Message", [new("Yes", ActionId: "yes")]);
+
+        var waiting = service.WaitForResultAsync(
+            submission.NotificationId, TimeSpan.FromMilliseconds(20), waitUntilExpired: true);
+        await Task.Delay(50);
+        Assert.False(waiting.IsCompleted);
+
+        backend.Click("yes");
+        Assert.Equal("activated", (await waiting).Status);
+    }
+
+    [Fact]
+    public async Task WaitReturnsExpiredWhenTheNotificationExpiresFirst()
+    {
+        using var backend = new FakeBackend();
+        using var service = new NotificationService(backend, TimeProvider.System, TimeSpan.FromMilliseconds(30));
+        var submission = service.Show("Title", "Message");
+
+        var result = await service.WaitForResultAsync(submission.NotificationId, TimeSpan.FromSeconds(1));
+
+        Assert.Equal("expired", result.Status);
+        Assert.Equal(submission.ExpiresAt, result.ExpiresAt);
+    }
+
+    [Fact]
+    public async Task WaitCanBeCanceled()
+    {
+        using var backend = new FakeBackend();
+        using var service = new NotificationService(backend, new FakeTime());
+        var submission = service.Show("Title", "Message");
+        using var cancellation = new CancellationTokenSource();
+
+        var waiting = service.WaitForResultAsync(
+            submission.NotificationId, TimeSpan.FromSeconds(5), cancellation.Token);
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
+    }
+
+    [Fact]
     public void UnissuedIdsTokensAndActionsCannotActivate()
     {
         using var backend = new FakeBackend();
