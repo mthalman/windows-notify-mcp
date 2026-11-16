@@ -33,6 +33,8 @@ Select **View repository** to open GitHub in your browser, or select **Explain h
 
 Link buttons open HTTP or HTTPS URLs and do not report a response to Copilot. Button responses expire after one hour and are lost when the Copilot session ends. Images are not supported.
 
+The `wait_for_notification_result` tool can wait for a button or toast-body click. Clients supporting the 2026-07-28 MCP Tasks extension can run the wait as a background task until the notification ID expires; the earlier experimental Tasks protocol is not compatible. Other clients use a normal tool call that waits up to 60 seconds by default; `timeoutSeconds` can be set from 1 to 300. A wait that reaches the ID's expiry returns `expired`. Use `get_notification_result` for an immediate check. Tasks are stored in memory and are subject to the SDK's TTL.
+
 ## Troubleshooting
 
 - **No visible banner:** In Windows **Settings > System > Notifications**, enable notifications for the application and check Do Not Disturb and banner permissions. Check Notification Center too. A successful submission does not guarantee a visible banner.
