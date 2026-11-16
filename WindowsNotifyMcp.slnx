@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/WindowsNotifyMcp/WindowsNotifyMcp.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/WindowsNotifyMcp.Tests/WindowsNotifyMcp.Tests.csproj" />
+  </Folder>
+</Solution>
