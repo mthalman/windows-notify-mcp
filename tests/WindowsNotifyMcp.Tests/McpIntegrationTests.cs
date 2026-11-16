@@ -135,7 +135,7 @@ public sealed class McpIntegrationTests
     }
 
     [Fact]
-    public async Task ProductionHostUsesCleanJsonStdoutWithoutNativeRegistration()
+    public async Task ProductionHostIsWindowlessAndUsesCleanJsonStdoutWithoutNativeRegistration()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
@@ -146,13 +146,17 @@ public sealed class McpIntegrationTests
         var nativeExecutable = Environment.GetEnvironmentVariable("WINDOWS_NOTIFY_MCP_NATIVE_EXE");
         var executable = nativeExecutable ?? Path.Combine(directory.FullName, "src", "WindowsNotifyMcp", "bin",
             configuration, "net11.0-windows10.0.19041.0", "win-x64", "WindowsNotifyMcp.exe");
-        if (nativeExecutable is not null)
+        using (var stream = File.OpenRead(executable))
+        using (var image = new PEReader(stream))
         {
-            // A successful launch alone cannot distinguish Native AOT from a managed apphost.
-            using var stream = File.OpenRead(executable);
-            using var image = new PEReader(stream);
-            Assert.Null(image.PEHeaders.CorHeader);
-            Assert.False(File.Exists(Path.ChangeExtension(executable, ".runtimeconfig.json")));
+            Assert.NotNull(image.PEHeaders.PEHeader);
+            Assert.Equal(Subsystem.WindowsGui, image.PEHeaders.PEHeader.Subsystem);
+            if (nativeExecutable is not null)
+            {
+                // A successful launch alone cannot distinguish Native AOT from a managed apphost.
+                Assert.Null(image.PEHeaders.CorHeader);
+                Assert.False(File.Exists(Path.ChangeExtension(executable, ".runtimeconfig.json")));
+            }
         }
         var toolLauncher = Environment.GetEnvironmentVariable("WINDOWS_NOTIFY_MCP_TOOL_LAUNCHER");
         var startInfo = new ProcessStartInfo(toolLauncher is null ? executable :
