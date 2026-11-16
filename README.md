@@ -17,7 +17,8 @@ Copilot downloads the source and builds the server on first use; you do not need
 Install it:
 
 ```powershell
-copilot plugin install mthalman/windows-notify-mcp
+copilot plugin marketplace add mthalman/windows-notify-mcp
+copilot plugin install windows-notify-mcp@windows-notify-mcp
 ```
 
 Start a new Copilot session after installing. The plugin adds an MCP server named `windows-notify`. Its first build can take a minute; later sessions reuse the build unless its source or build configuration has changed.
